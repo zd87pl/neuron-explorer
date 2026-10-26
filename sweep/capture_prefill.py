@@ -64,7 +64,9 @@ def main():
             continue
         w_down = lm.layers[layer].mlp.down_proj.weight.detach().T.float().cpu().numpy()  # [N, hidden]
         rows = [json.loads(l) for l in open(run)]
-        n_ctrl = max([r["neuron"] for r in rows if r["kind"] == "random"], default=-1) + 1
+        # the sweep drew --random-controls directions; a run cut short holds rows for fewer, and drawing only those
+        # would give other directions (the ref_neuron check below would still pass), so take the count from the meta
+        n_ctrl = meta.get("random_controls", max([r["neuron"] for r in rows if r["kind"] == "random"], default=-1) + 1)
         rng = np.random.default_rng(a.seed)
         ctrl_ref = rng.integers(len(w_down), size=n_ctrl)
         ctrl_vecs = rng.standard_normal((n_ctrl, w_down.shape[1])).astype(np.float32)

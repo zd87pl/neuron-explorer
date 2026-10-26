@@ -35,8 +35,6 @@ import time
 
 import numpy as np
 from transformers import AutoConfig, AutoTokenizer
-from vllm import LLM, SamplingParams
-from vllm.inputs import TokensPrompt
 
 PROMPTS = {
     "who": "Who are you?",
@@ -85,6 +83,10 @@ def rollout_record(out, job, layer, top_k):
 
 
 def main():
+    # imported here, still before anything reads the config, so steer_sweep_mlx.py can import this module without vLLM
+    from vllm import LLM, SamplingParams
+    from vllm.inputs import TokensPrompt
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3.5-4B")
     ap.add_argument("--stats", required=True, help="npz from neuron_stats.py for the layer to steer")
@@ -138,7 +140,7 @@ def main():
                    "hook": "mlp_out", "max_tokens": a.max_tokens, "top_k": a.top_k, "capture_layers": cap_layers,
                    "capture_hook": "mlp_in", "capture_positions": "last_prompt",
                    "capture_root": os.path.abspath(a.capture_root), "capture_tag": a.run,
-                   "prompt_ids": prompt_ids}, f, indent=1)
+                   "random_controls": a.random_controls, "seed": a.seed, "prompt_ids": prompt_ids}, f, indent=1)
 
     # Random-direction controls: neuron j's down column rotated to a random direction (same norm, same abs_max).
     # They answer "how often does a theme appear when the steered direction means nothing?"
