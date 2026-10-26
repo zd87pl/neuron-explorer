@@ -120,6 +120,7 @@ class Runtime:
         return hook
 
     def n_heads(self, layer):
+        self.ensure_loaded()
         L = self.lm.layers[layer]
         return L.self_attn.o_proj.in_features // L.self_attn.head_dim if hasattr(L, "self_attn") else L.linear_attn.num_v_heads
 

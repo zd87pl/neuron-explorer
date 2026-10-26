@@ -185,11 +185,15 @@ class Qwen:
         self.layers = self.inner.layers
         self.lm_head = None if self.args.tie_word_embeddings else lm.lm_head
         self.heads = {}  # layer -> [(head or None, scale)], read by _ScaledHeads during a pass
+        self.dtype = self.layers[0].input_layernorm.weight.dtype  # compute dtype; norms stay unquantized
 
         hf_format = raw.pop("__hf_format__", False)
+        if not hf_format:
+            print(f"note: {path} is an mlx-lm conversion, whose norms hold 1 + w rounded to bf16; results drift from "
+                  "transformers and vLLM by about bf16 noise (the original HF checkpoint doesn't)", flush=True)
 
-        def precise(module, path):
-            w = raw.get(path + ".weight")
+        def precise(module, key):
+            w = raw.get(key + ".weight")
             w = (1.0 + w.astype(mx.float32)) if hf_format and w is not None else module.weight.astype(mx.float32)
             return _Norm(w, module.eps)
 
@@ -214,7 +218,6 @@ class Qwen:
         self.tok = AutoTokenizer.from_pretrained(self.path)
         self.n_layers, self.hidden, self.inter = len(self.layers), self.args.hidden_size, self.args.intermediate_size
         self.layer_types = ["linear_attention" if L.is_linear else "full_attention" for L in self.layers]
-        self.dtype = self.inner.embed_tokens.weight.dtype
 
     # ---------- shapes and weights ----------
     def n_heads(self, layer):

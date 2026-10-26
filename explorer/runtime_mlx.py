@@ -101,6 +101,7 @@ class Runtime:
             self.status = "ready"
 
     def n_heads(self, layer):
+        self.ensure_loaded()
         return self.q.n_heads(layer)
 
     def _forward(self, ids, cache=None, stop=None, heads=None):
