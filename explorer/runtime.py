@@ -3,7 +3,8 @@ neuron activations on arbitrary text, and logit-lens tokens for a neuron's down 
 
 The hook sits on the input of a layer's down_proj, where the neuron activations silu(gate) * up live, so add,
 multiply, and reading are all exact. Add doses are in units of the median residual norm leaving the layer, the same
-unit as the sweep's `--dose-unit rel`.
+unit as the sweep's `--dose-unit rel`. This one runs on PyTorch (CUDA, MPS or CPU); runtime_mlx.py is the same runtime
+on MLX, which the server uses on Apple silicon.
 """
 import json
 import os
@@ -276,8 +277,8 @@ class Runtime:
 
     def next_logprobs(self, text, chat=True, prefix="", pushes=None, heads=None):
         """Log-probabilities of the next token after `text` (as a user turn when chat=True, so the next token opens the
-        reply) followed by `prefix`, as a [vocab] tensor. With pushes / heads (same units as read()) it also returns
-        the same distribution under that intervention: (base, intervened or None)."""
+        reply) followed by `prefix`, as a float32 numpy array [vocab]. With pushes / heads (same units as read()) it
+        also returns the same distribution under that intervention: (base, intervened or None)."""
         self.ensure_loaded()
         ids = self.chat_ids(text) if chat else self.tok(text).input_ids
         if prefix:
@@ -291,7 +292,7 @@ class Runtime:
                         out = self.model(input_ids=torch.tensor([ids], device=self.dev), use_cache=False, logits_to_keep=1)
                 finally:
                     self._push = self._heads = None
-                return torch.log_softmax(out.logits[0, -1].float(), -1).cpu()
+                return torch.log_softmax(out.logits[0, -1].float(), -1).cpu().numpy()
 
         base = run(None, None)
         if not pushes and not heads:
@@ -470,15 +471,15 @@ class Runtime:
 
     # ---------- which neurons fire on a text ----------
     def all_activations(self, ids, skip_first=False):
-        """Per layer: (max, argmax, min, argmin) over tokens for every neuron, on token ids [T] or [B, T]. With
-        skip_first, position 0 (the attention sink) is left out and argmax/argmin count from position 1."""
+        """Per layer: (max, argmax, min, argmin) over tokens for every neuron, as numpy arrays, on token ids [T] or
+        [B, T]. With skip_first, position 0 (the attention sink) is left out and argmax/argmin count from position 1."""
         self.ensure_loaded()
         with self.lock, torch.inference_mode():
             self._capture_all, self._capture_from = {}, int(skip_first)
             try:
                 x = torch.tensor(ids, device=self.dev)
                 self.lm(input_ids=x if x.dim() == 2 else x[None], use_cache=False)
-                return self._capture_all
+                return {l: tuple(t.numpy() for t in v) for l, v in self._capture_all.items()}
             finally:
                 self._capture_all, self._capture_from = None, 0
 
@@ -496,7 +497,7 @@ class Runtime:
                 self.status = f"measuring neuron ranges {seen // 1000}k/{tokens // 1000}k tokens"
                 acts = self.all_activations(chunk, skip_first=True)
                 for l, (mx, _, mn, _) in acts.items():
-                    pos[l] = np.maximum(pos[l], mx.numpy()); neg[l] = np.minimum(neg[l], mn.numpy())
+                    pos[l] = np.maximum(pos[l], mx); neg[l] = np.minimum(neg[l], mn)
                 seen += seq
             if seen >= tokens:
                 break

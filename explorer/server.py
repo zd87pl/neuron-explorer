@@ -21,12 +21,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "sweep"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rank import compute_units  # noqa: E402
-from runtime import NO_MODEL, Runtime  # noqa: E402
+
+# the live model runs on MLX on Apple silicon and on PyTorch elsewhere; EXPLORER_BACKEND=mlx or torch overrides
+BACKEND = os.environ.get("EXPLORER_BACKEND") or ("mlx" if sys.platform == "darwin" else "torch")
+if BACKEND == "mlx":
+    from runtime_mlx import MODEL, NO_MODEL, Runtime  # noqa: E402
+else:
+    from runtime import MODEL, NO_MODEL, Runtime  # noqa: E402
 
 RUNS, STATS = os.path.join(ROOT, "runs"), os.path.join(ROOT, "stats")
 NAMES = os.path.join(ROOT, "explorer", "names.json")
 PORT = int(os.environ.get("PORT", 8791))
-_cfg = AutoConfig.from_pretrained("Qwen/Qwen3.5-4B").get_text_config()
+_cfg = AutoConfig.from_pretrained(MODEL).get_text_config()
 ARCH = {"n_layers": _cfg.num_hidden_layers, "hidden": _cfg.hidden_size, "inter": _cfg.intermediate_size,
         "layer_types": list(_cfg.layer_types), "attn_heads": _cfg.num_attention_heads,
         "kv_heads": _cfg.num_key_value_heads, "linear_k_heads": _cfg.linear_num_key_heads,
@@ -145,7 +151,7 @@ def names():
 @app.get("/api/index")
 def index():
     runs = layer_runs()
-    return {"model": "Qwen/Qwen3.5-4B", "arch": ARCH,
+    return {"model": MODEL, "arch": ARCH,
             "layers": {str(l): os.path.basename(p) for l, p in sorted(runs.items())}, "status": rt.status}
 
 
@@ -343,9 +349,9 @@ async def fires(text: str, limit: int = 300, chat: bool = False):
     toks = [rt.tok.decode([t]) for t in ids]
     cand = []
     for l, (mx, amx, mn, amn) in acts.items():
-        p = mx.numpy() / np.maximum(sc["pos"][l], 1e-3)
-        q = mn.numpy() / np.minimum(sc["neg"][l], -1e-3)
-        for arr, idx, sign, raw in ((p, amx.numpy(), "+", mx.numpy()), (q, amn.numpy(), "-", mn.numpy())):
+        p = mx / np.maximum(sc["pos"][l], 1e-3)
+        q = mn / np.minimum(sc["neg"][l], -1e-3)
+        for arr, idx, sign, raw in ((p, amx, "+", mx), (q, amn, "-", mn)):
             top = np.argpartition(-arr, limit)[:limit]
             cand += [(float(arr[n]), l, int(n), sign, int(idx[n]), float(raw[n])) for n in top]
     cand.sort(reverse=True)
@@ -599,8 +605,8 @@ def act_range(layer, n):
 @app.get("/api/agent/overview")
 def agent_overview():
     runs = layer_runs()
-    return {"model": "Qwen/Qwen3.5-4B", "arch": ARCH, "layers_with_sweeps": sorted(runs),
-            "named_neurons": len(names()), "live_model": not NO_MODEL}
+    return {"model": MODEL, "arch": ARCH, "layers_with_sweeps": sorted(runs),
+            "named_neurons": len(names()), "live_model": not NO_MODEL, "backend": BACKEND}
 
 
 @app.get("/api/agent/names")
@@ -736,19 +742,21 @@ async def agent_logprobs(req: Request):
         if tid:
             targets.append((t, tid[0], len(tid) > 1))
 
+    def top(x, n):  # indices of the n largest, largest first
+        i = np.argpartition(-x, n - 1)[:n]
+        return i[np.argsort(-x[i], kind="stable")]
+
     def view(lp):
-        v, i = lp.topk(k)
-        return {"top": [[dec(t), round(float(x), 3)] for x, t in zip(v, i)],
+        return {"top": [[dec(t), round(float(lp[t]), 3)] for t in top(lp, k)],
                 "targets": [{"text": t, "token": dec(tid), "logprob": round(float(lp[tid]), 3),
                              **({"first_token_only": True} if multi else {})} for t, tid, multi in targets]}
     if alt is None:
         return view(base)
-    d = alt.exp() - base.exp()  # ranked by probability gained or lost, so the far tail's large log ratios stay out
-    up, down = d.topk(12), (-d).topk(12)
+    d = np.exp(alt) - np.exp(base)  # ranked by probability gained or lost, so the far tail's large log ratios stay out
     row = lambda i: [dec(i), round(float(base[i]), 2), round(float(alt[i]), 2)]
     return {"baseline": view(base), "intervened": view(alt),
-            "kl": round(float((base.exp() * (base - alt)).sum()), 4),
-            "rose": [row(i) for i in up.indices], "fell": [row(i) for i in down.indices],
+            "kl": round(float((np.exp(base) * (base - alt)).sum()), 4),
+            "rose": [row(i) for i in top(d, 12)], "fell": [row(i) for i in top(-d, 12)],
             "rows_are": "[token, baseline logprob, intervened logprob]",
             "pushed": [{"neuron": f"L{l} " + ("MLP (all)" if n is None else f"N{n}"), "dose": dd, "mode": m} for l, n, dd, m in pushes],
             "heads": [{"layer": l, "head": "all" if hd is None else hd, "scale": sc} for l, hd, sc in hs]}
