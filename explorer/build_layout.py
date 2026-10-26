@@ -10,11 +10,11 @@ Writes explorer/cache/layout_<kind>.npz: cell[L, N] (int16, row * 96 + col for n
 import argparse
 import json
 import os
+import struct
 
 import numpy as np
 import umap
 from huggingface_hub import snapshot_download
-from safetensors import safe_open
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--model", default="Qwen/Qwen3.5-4B")
@@ -24,16 +24,30 @@ ap.add_argument("--neighbors", type=int, default=30)
 a = ap.parse_args()
 
 root = snapshot_download(a.model, allow_patterns=["*.safetensors", "*.json"])
-index = json.load(open(os.path.join(root, "model.safetensors.index.json")))["weight_map"]
+index_path = os.path.join(root, "model.safetensors.index.json")
+index = json.load(open(index_path))["weight_map"] if os.path.exists(index_path) else None  # None: one model.safetensors
 cfg = json.load(open(os.path.join(root, "config.json")))["text_config"]
 L, N = cfg["num_hidden_layers"], cfg["intermediate_size"]
 side = int(round(N ** 0.5))
 assert side * side == N
+headers = {}
 
 
 def tensor(name):
-    with safe_open(os.path.join(root, index[name]), "pt") as f:
-        return f.get_tensor(name).float().numpy()
+    """A checkpoint tensor as float32, read straight from its safetensors file (an 8-byte little-endian header length,
+    a JSON header with each tensor's dtype, shape and byte range, then the data), so torch isn't needed; safetensors'
+    numpy loader can't read bf16. A bf16 is the top half of an fp32, so shifting its bits up 16 widens it exactly."""
+    path = os.path.join(root, index[name] if index else "model.safetensors")
+    if path not in headers:
+        with open(path, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            headers[path] = (8 + n, json.loads(f.read(n)))
+    base, h = headers[path]
+    t = h[name]
+    begin, end = t["data_offsets"]
+    dt = np.dtype({"BF16": "<u2", "F16": "<f2", "F32": "<f4", "F64": "<f8"}[t["dtype"]])
+    x = np.fromfile(path, dt, (end - begin) // dt.itemsize, offset=base + begin).reshape(t["shape"])
+    return (x.astype(np.uint32) << 16).view(np.float32) if t["dtype"] == "BF16" else x.astype(np.float32)
 
 
 cells = np.zeros((L, N), np.int16)
