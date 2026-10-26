@@ -280,3 +280,46 @@ Per-layer Spearman ρ between the two scores is 0.84–0.95. The hypothesis is d
 **Captures lost and rebuilt.** The sweep's fork captures (MLP input at layers L, L+1, L+4, L+8 at the last prompt token) were never pulled from the pods before deletion. A capture depends only on (direction, dose, prompt), because the push applies at every prompt position, so it can be rebuilt by prefill. `sweep/capture_prefill.py` does that, about 800 rollouts/s on a 4090. Against the fork's own surviving end-to-end captures (294 rollouts, 4 layers) the median relative error is 1.1–1.5% and the max 2%. That is the same bf16 band as the original HF-vs-fork equivalence check. All 32 runs are rebuilt (6.2 GB, `captures/<run>.mlp_in.npy`, rows aligned to jsonl lines). Lesson for the pipeline: pulling a sweep means runs, stats *and* captures, checked by listing every output directory the run's meta names.
 
 **Embeddings** UMAPs now exist for all 30 subset layers. Each took about 50 s of CPU-bound UMAP on the pod.
+
+## 2026-10-26 — MLX port for the Mac
+
+Lyra asked for the explorer to run on MLX on an M5 Max (128 GB). The live model, the sweep and the build scripts now
+have MLX versions beside the torch ones (`explorer/runtime_mlx.py`, `sweep/*_mlx.py`, `explorer/build_connections_mlx.py`),
+all on `sweep/qwen_mlx.py`, which writes out Qwen3.5's forward pass around mlx-lm's modules with hooks on the MLP input,
+the activations, the MLP output and the residual, plus head scaling and an early stop. The server picks MLX on Apple
+silicon. The session that did the port couldn't download the weights (huggingface.co blocked), so everything below was
+measured against the torch code on tiny random Qwen3.5 checkpoints with the real layout (8 layers, 3:1 linear/full,
+tied and untied embeddings), on MLX's CPU backend.
+
+**mlx-lm alone is not transformers' Qwen3.5.** Qwen3.5's norms are zero-centred, rms_norm(x) · (1 + w); transformers
+computes 1 + w in fp32, while mlx-lm adds the 1 to the weight at load and stores it in bf16. Even with every weight cast
+to fp32 that moved logits by up to 3.3 (peak 22) on the tiny model. With the norms in fp32 (and silu rounded once, as
+torch does) the gap is 4e-4 and per-layer residuals agree to 1e-6 relative. In bf16 the per-module error of the
+linear-attention block was still 30% above transformers' own bf16 error: mlx-lm L2-normalises q and k and takes
+softplus(a + dt_bias) in bf16, where transformers (and the FLA kernels vLLM uses) hand fp32 q, k, v, β and decay to the
+delta rule. Doing the same brought it level (7.85e-3 vs 7.80e-3). Full attention is 15% above on the CPU only, where
+MLX's fallback rounds attention scores to bf16; Metal's kernels keep them in fp32. An mlx-lm conversion of the weights
+has the bf16 norms baked in, so the explorer loads the HF checkpoint.
+
+**Agreement.** `sweep/check_mlx.py` runs both explorer runtimes on one checkpoint: reads with pushes, whole-layer zeroing
+and head scaling, next-token logprobs, three-row steered chats with left-padded histories, all-neuron activations, the
+residual-norm dose unit, lens and connections. In fp32: 36/36, the chats token for token. In bf16 it measures each engine
+against torch fp32 instead, since bf16 engines never agree exactly: MLX sits 0.96–1.26× as far as torch bf16 does
+(geometric mean over 24 cases; MLX nearer on half). Over 40 texts the two bf16 engines had the same mean KL from fp32,
+MLX the further one on exactly 20. The sweep ports, each checked against its torch original by one agent and re-checked
+by another: `steer_sweep_mlx` gives the same token ids on every rollout as a transformers greedy reference with the same
+mlp_out push (fp32, 84/84 and 34 long ones), logprobs within 1e-4, captures equal to `capture_prefill.py`'s, and resumes
+after a kill with every job once and captures aligned; steer-lens token lists identical; regime stats at fp32 noise;
+connections identical except equal-z ties.
+
+**A capture bug the port turned up.** `capture_prefill.py` re-derived the random-control directions from the largest
+control index in the run, while the sweep drew `--random-controls` of them. numpy's draws depend on the count, so on a run
+cut short before its last control the directions came out different — relative error 1.1 on the control rows in a test —
+and the ref_neuron assertion still passed, because ctrl_ref is prefix-stable. A run that finished holds its last
+control, so finished runs were unaffected. Both sweeps now write `random_controls` and `seed` into meta.json and both
+capture scripts use the count from there.
+
+**Untested:** everything on Metal: the real weights, speed, and whether `steer_sweep_mlx`'s default of 256 rows a batch
+(about 70 MB of cache a row) is the right size. First on the Mac: `sweep/check_mlx.py` and `--bf16` on Qwen3.5-4B, then
+the old engine-agreement probe (L22 N3103 +0.8 "Who are you?" against the vLLM rollout).
+
