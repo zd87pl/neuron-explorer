@@ -7,6 +7,7 @@ import builtins
 import glob
 import json
 import os
+import platform
 import sys
 import threading
 
@@ -23,7 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rank import compute_units  # noqa: E402
 
 # the live model runs on MLX on Apple silicon and on PyTorch elsewhere; EXPLORER_BACKEND=mlx or torch overrides
-BACKEND = os.environ.get("EXPLORER_BACKEND") or ("mlx" if sys.platform == "darwin" else "torch")
+BACKEND = os.environ.get("EXPLORER_BACKEND") or (
+    "mlx" if sys.platform == "darwin" and platform.machine() == "arm64" else "torch")
 if BACKEND == "mlx":
     from runtime_mlx import MODEL, NO_MODEL, Runtime  # noqa: E402
 else:

@@ -13,4 +13,8 @@ dependencies = [
     "uvicorn>=0.54.0",
     "sentence-transformers>=6.1.0",
     "umap-learn>=0.5.12",
+    # the live model on Apple silicon (explorer/runtime_mlx.py, sweep/*_mlx.py); sweep/qwen_mlx.py builds on mlx-lm's
+    # Qwen3.5 modules and caches, so a new mlx-lm minor version needs sweep/check_mlx.py run before it's let in
+    "mlx>=0.32.4; sys_platform == 'darwin'",
+    "mlx-lm>=0.32.2,<0.33; sys_platform == 'darwin'",
 ]
