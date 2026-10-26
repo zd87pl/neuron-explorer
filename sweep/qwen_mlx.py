@@ -185,7 +185,8 @@ class Qwen:
         self.layers = self.inner.layers
         self.lm_head = None if self.args.tie_word_embeddings else lm.lm_head
         self.heads = {}  # layer -> [(head or None, scale)], read by _ScaledHeads during a pass
-        self.dtype = self.layers[0].input_layernorm.weight.dtype  # compute dtype; norms stay unquantized
+        m = self.layers[0].mlp.down_proj  # the compute dtype (a quantized layer keeps it in its scales)
+        self.dtype = (m.scales if isinstance(m, nn.QuantizedLinear) else m.weight).dtype
 
         hf_format = raw.pop("__hf_format__", False)
         if not hf_format:
@@ -193,8 +194,10 @@ class Qwen:
                   "transformers and vLLM by about bf16 noise (the original HF checkpoint doesn't)", flush=True)
 
         def precise(module, key):
+            # w in the compute dtype first, as transformers holds it after loading in that dtype, then 1 + w in fp32
             w = raw.get(key + ".weight")
-            w = (1.0 + w.astype(mx.float32)) if hf_format and w is not None else module.weight.astype(mx.float32)
+            w = (1.0 + w.astype(self.dtype).astype(mx.float32)) if hf_format and w is not None else \
+                module.weight.astype(mx.float32)
             return _Norm(w, module.eps)
 
         pre = "language_model.model"

@@ -79,8 +79,8 @@ full = [i for i, t in enumerate(M.q.layer_types) if t == "full_attention"]
 lin = [i for i, t in enumerate(M.q.layer_types) if t == "linear_attention"]
 N = M.q.inter
 rng = np.random.default_rng(0)
-TEXTS = ["Aliens built the pyramids, who made you? 外星人 😀👍🏽 and then the farmers settled the river valley.",
-         "def merge(a, b):\n    out = []\n    while a and b:\n        out.append(a.pop(0) if a[0] < b[0] else b.pop(0))",
+TEXTS = ["Aliens built the pyramids, who made you? 外星人 😀👍🏽 and the farmers settled the river valley.",
+         "def merge(a, b):\n    out = []\n    while a and b:\n        out.append(a.pop(0) if a[0] < b[0] else b.pop())",
          "She asked me what I thought of the plan, and I told her honestly that it seemed rushed.",
          "The orange glow of the evening spread across the hills while the snake slid under a warm stone."]
 PROMPTS = [("Who are you?", "I am"), ("Describe the color orange.", ""), ("Write a snake game in Python.", "Here"),
